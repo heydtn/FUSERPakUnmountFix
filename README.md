@@ -3,6 +3,19 @@
 A FUSER mod that fixes the game crashing when you scroll the song list quickly with custom songs installed. It needs
 [FUSERModLoader](https://github.com/heydtn/FUSERModLoader).
 
+## Installing
+
+Once [FUSERModLoader is installed](https://github.com/heydtn/FUSERModLoader#installing), unzip the release's
+`PakUnmountFix.zip` into `Fuser\Binaries\Win64\mods`. The file structure should be:
+
+```
+Fuser\Binaries\Win64\mods\PakUnmountFix\
+  PakUnmountFix.dll
+  mod.ini
+```
+
+If the fix can't be applied, `PakUnmountFix.log` next to it says why.
+
 ## The crash
 
 UE 4.24's `FPakPlatformFile` code copies the list of mounted paks while holding a lock, lets go of the lock, and
@@ -22,19 +35,6 @@ Unmount's delete is deferred until nothing can still be using the pak:
 - If anything isn't as expected (a byte pattern missing, a reader it can't track, or Windows enforcing shadow
   stacks), the mod logs why and the game deletes paks immediately, as it does without the mod.
 
-## Installing
-
-Needs FUSERModLoader's `winhttp.dll` in `Fuser\Binaries\Win64`. Copy `PakUnmountFix.dll` and `mod.ini` to:
-
-```
-Fuser\Binaries\Win64\mods\PakUnmountFix\PakUnmountFix.dll
-Fuser\Binaries\Win64\mods\PakUnmountFix\mod.ini
-```
-
-`mod.ini` puts the mod in FUSERModLoader's `engine_fixes` stage, so it loads before other mods.
-
-If the fix can't be applied, `PakUnmountFix.log` next to it says why.
-
 ## Building
 
 Needs Visual Studio 2022 with the **Desktop development with C++** workload, and git on `PATH`, since CMake
@@ -46,6 +46,13 @@ cmake --build build --config Release
 ```
 
 This builds `build\Release\PakUnmountFix.dll`.
+
+## Releases
+
+Releases are published by hand: on GitHub, open Actions, pick the workflow and use **Run workflow** on
+`main`. Each release is named after the commit's time in UTC and its hash, as
+`YYYY.MM.DD.HHMMSS-<commit>`, with `PakUnmountFix.zip` holding `PakUnmountFix.dll` and `mod.ini` in a
+`PakUnmountFix` folder.
 
 ## Licence
 
