@@ -5,6 +5,7 @@
 #include "hooks.hpp"
 
 #include <cstdlib>
+#include <string>
 #include <cstring>
 #include <vector>
 
@@ -66,12 +67,12 @@ uint8_t *find_function([[maybe_unused]] const char *name, const char *pattern, u
             offset = static_cast<const uint8_t *>(next) - start;
         }
         if (matches_at(start + offset, bytes)) {
-            DEBUG_LOG("%s found at exe+0x%llX\n", name,
-                      static_cast<unsigned long long>(start + offset - exe_base()));
+            DEBUG_LOG(std::string(name) + " found at exe+0x" +
+                      hex_text(static_cast<std::uintptr_t>(start + offset - exe_base())));
             return start + offset;
         }
     }
-    DEBUG_LOG("%s not found\n", name);
+    DEBUG_LOG(std::string(name) + " not found");
     return nullptr;
 }
 
@@ -83,18 +84,18 @@ uint8_t *find_function(const char *name, const char *pattern) {
 bool setup_hooks(const HookRequest *hooks, size_t count) {
     funchook_t *handle = funchook_create();
     if (!handle) {
-        log_error("funchook_create failed - not hooked\n");
+        log_error("funchook_create failed - not hooked");
         return false;
     }
     std::vector<void *> originals(count);
     for (size_t i = 0; i < count; i++) {
         originals[i] = *hooks[i].target;
         if (funchook_prepare(handle, hooks[i].target, hooks[i].hook) != FUNCHOOK_ERROR_SUCCESS) {
-            log_error("funchook_prepare failed for %p: %s - not hooked\n", originals[i],
-                       funchook_error_message(handle));
+            log_error("funchook_prepare failed for " + pointer_text(originals[i]) + ": " +
+                      funchook_error_message(handle) + " - not hooked");
         } else if (!trampoline_within_jump_range(originals[i], *hooks[i].target)) {
-            log_error("funchook's trampoline %p is out of jump range of %p - not hooked\n", *hooks[i].target,
-                       originals[i]);
+            log_error("funchook's trampoline " + pointer_text(*hooks[i].target) + " is out of jump range of " +
+                      pointer_text(originals[i]) + " - not hooked");
         } else {
             continue;
         }
@@ -105,7 +106,7 @@ bool setup_hooks(const HookRequest *hooks, size_t count) {
         return false;
     }
     if (funchook_install(handle, 0) != FUNCHOOK_ERROR_SUCCESS) {
-        log_error("funchook_install failed: %s - not hooked\n", funchook_error_message(handle));
+        log_error(std::string("funchook_install failed: ") + funchook_error_message(handle) + " - not hooked");
         return false;
     }
     return true;

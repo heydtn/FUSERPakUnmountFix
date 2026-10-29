@@ -432,7 +432,7 @@ __declspec(noinline) void *FPakFile_Delete_Hook(void *pak_file, uint32_t flags) 
 
 void stop_tracking(const char *why) {
     if (g_tracking.exchange(false)) {
-        log_error("%s, so unmounted paks are deleted right away again, as without the fix\n", why);
+        log_error(std::string(why) + ", so unmounted paks are deleted right away again, as without the fix");
     }
 }
 
@@ -443,10 +443,8 @@ std::string describe_address(const void *address) {
         GetModuleFileNameA(static_cast<HMODULE>(module), path, MAX_PATH);
     }
     const char *name = strrchr(path, '\\');
-    char text[MAX_PATH + 32];
-    snprintf(text, sizeof(text), "%s+%llX", name ? name + 1 : path,
-             static_cast<unsigned long long>(static_cast<const byte *>(address) - static_cast<const byte *>(module)));
-    return text;
+    return std::string(name ? name + 1 : path) + "+" +
+           hex_text(reinterpret_cast<std::uintptr_t>(address) - reinterpret_cast<std::uintptr_t>(module));
 }
 
 // The CRT's exit and _cexit, which destroy statics a pak's destructor needs
@@ -548,9 +546,8 @@ void hook_handle_destructor(void **vtable) {
     }
     redirect_slot(&vtable[0], kHandleDestructorHooks[index], &g_handle_destructors[index]);
     guard.unlock();
-    DEBUG_LOG("handle destructor %s hooked through its vtable %s\n",
-              describe_address(reinterpret_cast<const void *>(g_handle_destructors[index])).c_str(),
-              describe_address(vtable).c_str());
+    DEBUG_LOG("handle destructor " + describe_address(reinterpret_cast<const void *>(g_handle_destructors[index])) +
+              " hooked through its vtable " + describe_address(vtable));
 }
 
 void *CreatePakFileHandle_Hook(void *pak_platform_file, const wchar_t *filename, void *pak_file, const void *entry) {
@@ -706,8 +703,7 @@ byte *return_stub_for(const byte *return_to) {
     }
     g_stubs.emplace(return_to, code);
     guard.unlock();
-    DEBUG_LOG("readers returning to %s are redirected through a stub\n",
-              describe_address(return_to).c_str());
+    DEBUG_LOG("readers returning to " + describe_address(return_to) + " are redirected through a stub");
     return code;
 }
 
@@ -741,8 +737,8 @@ void log_lock_call_once(const byte *lock_call) {
             return;
         }
     }
-    DEBUG_LOG("reader found, taking the pak lock at %s (in the function at %s)\n",
-              describe_address(lock_call).c_str(), describe_address(function_start(lock_call)).c_str());
+    DEBUG_LOG("reader found, taking the pak lock at " + describe_address(lock_call) + " (in the function at " +
+              describe_address(function_start(lock_call)) + ")");
 }
 
 bool unwind_frame(CONTEXT &context) {
@@ -881,7 +877,7 @@ CRITICAL_SECTION *learn_pak_list_lock(CRITICAL_SECTION *section) {
 #if PAK_UNMOUNT_FIX_DEBUG_LOGGING
     const auto *pak_platform_file = reinterpret_cast<const byte *>(section) - g_code.pak_list_critical_offset;
     const auto mounted = *reinterpret_cast<const int32_t *>(pak_platform_file + g_code.pak_files_offset + 8);
-    DEBUG_LOG("found the pak list lock, with %d paks mounted\n", mounted);
+    DEBUG_LOG("found the pak list lock, with " + std::to_string(mounted) + " paks mounted");
 #endif
     return section;
 }
@@ -936,8 +932,7 @@ void restore_all_return_addresses() {
     for (const ReaderSlot *reader = g_reader_slots.load(); reader; reader = reader->next) {
         restore_return_addresses(reader);
     }
-    DEBUG_LOG("the game is writing a crash report, so readers' return addresses are put back and the "
-              "fix is off\n");
+    DEBUG_LOG("the game is writing a crash report, so readers' return addresses are put back and the fix is off");
 }
 
 using MiniDumpWriteDumpFunction = BOOL(WINAPI *)(HANDLE, DWORD, HANDLE, int, void *, void *, void *);
@@ -989,8 +984,7 @@ Function exported(HMODULE module, const char *name) {
 
 void apply_fix() {
     if (shadow_stacks_enforced()) {
-        log_error("shadow stacks are enforced, so return addresses can't be redirected "
-                   "- not applied\n");
+        log_error("shadow stacks are enforced, so return addresses can't be redirected - not applied");
         return;
     }
     HMODULE ntdll = GetModuleHandleW(L"ntdll.dll");
@@ -999,9 +993,10 @@ void apply_fix() {
     void **enter_slot = import_slot(g_exe, "EnterCriticalSection", false);
     if (!g_add_function_table || !g_grow_function_table ||
         reinterpret_cast<const byte *>(enter_slot) != g_code.wrapper_lock_slot) {
-        log_error("%s - not applied\n",
-                   g_add_function_table && g_grow_function_table ? "the pak lock isn't taken through the exe's import"
-                                                                  : "no growable function tables");
+        log_error(std::string(g_add_function_table && g_grow_function_table
+                                  ? "the pak lock isn't taken through the exe's import"
+                                  : "no growable function tables") +
+                  " - not applied");
         return;
     }
 
@@ -1011,7 +1006,7 @@ void apply_fix() {
     g_release_work = CreateThreadpoolWork(release_paks, nullptr, nullptr);
     g_release_timer = CreateThreadpoolTimer(release_tick, nullptr, nullptr);
     if (!g_release_work || !g_release_timer) {
-        log_error("no thread-pool work - not applied\n");
+        log_error("no thread-pool work - not applied");
         return;
     }
 
@@ -1025,7 +1020,7 @@ void apply_fix() {
         g_tracking.store(false);
         decltype(g_enter_critical_section) hook;
         redirect_slot(enter_slot, g_enter_critical_section, &hook);
-        log_error("hooks not installed - not applied\n");
+        log_error("hooks not installed - not applied");
         return;
     }
     hook_crash_reports(g_exe);
@@ -1035,9 +1030,9 @@ void apply_fix() {
     memcpy(&due, &first, sizeof(due));
     SetThreadpoolTimer(g_release_timer, &due, 250, 50);
     if (!hook_crt_exit(g_exe)) {
-        log_error("the CRT's exit isn't imported, so paks are still deleted while the game exits\n");
+        log_error("the CRT's exit isn't imported, so paks are still deleted while the game exits");
     }
-    DEBUG_LOG("applied\n");
+    DEBUG_LOG("applied");
 }
 
 bool scan_exe() {
@@ -1062,7 +1057,7 @@ void ApplyPakUnmountFix() {
         g_found = scan_exe();
     }
     if (!g_found) {
-        log_error("%s - not applied\n", g_not_found);
+        log_error(std::string(g_not_found ? g_not_found : "the pak code wasn't found") + " - not applied");
     } else {
         apply_fix();
     }

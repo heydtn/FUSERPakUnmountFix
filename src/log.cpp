@@ -4,16 +4,20 @@
 
 #include "log.hpp"
 
-#include <cstdarg>
 #include <cstdio>
+#include <memory>
 #include <mutex>
 #include <share.h>
 #include <string>
 
 namespace {
 
+struct FileCloser {
+    void operator()(std::FILE *file) const { std::fclose(file); }
+};
+
 // The log file, opened at the first message over the previous launch's
-std::FILE *g_log = nullptr;
+std::unique_ptr<std::FILE, FileCloser> g_log;
 
 // Opens g_log once, whichever thread logs first
 std::once_flag g_log_opened;
@@ -40,17 +44,29 @@ std::wstring log_path() {
 }  // namespace
 
 void start_log() {
-    std::call_once(g_log_opened, [] { g_log = _wfsopen(log_path().c_str(), L"w", _SH_DENYNO); });
+    std::call_once(g_log_opened, [] { g_log.reset(_wfsopen(log_path().c_str(), L"w", _SH_DENYNO)); });
 }
 
-void log_error(const char *format, ...) {
+void log_error(const std::string &line) {
     start_log();
     if (!g_log) {
         return;
     }
-    va_list arguments;
-    va_start(arguments, format);
-    std::vfprintf(g_log, format, arguments);
-    va_end(arguments);
-    std::fflush(g_log);
+    std::fputs(line.c_str(), g_log.get());
+    std::fputc('\n', g_log.get());
+    std::fflush(g_log.get());
+}
+
+std::string hex_text(std::uintptr_t value) {
+    constexpr char kDigits[] = "0123456789ABCDEF";
+    std::string text;
+    do {
+        text.insert(text.begin(), kDigits[value % 16]);
+        value /= 16;
+    } while (value != 0);
+    return text;
+}
+
+std::string pointer_text(const void *pointer) {
+    return "0x" + hex_text(reinterpret_cast<std::uintptr_t>(pointer));
 }
