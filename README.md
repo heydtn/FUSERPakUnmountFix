@@ -24,11 +24,14 @@ Unmount's delete is deferred until nothing can still be using the pak:
 
 ## Installing
 
-Needs FUSERModLoader's `winhttp.dll` in `Fuser\Binaries\Win64`. Copy `PakUnmountFix.dll` to:
+Needs FUSERModLoader's `winhttp.dll` in `Fuser\Binaries\Win64`. Copy `PakUnmountFix.dll` and `mod.ini` to:
 
 ```
 Fuser\Binaries\Win64\mods\PakUnmountFix\PakUnmountFix.dll
+Fuser\Binaries\Win64\mods\PakUnmountFix\mod.ini
 ```
+
+`mod.ini` puts the mod in FUSERModLoader's `engine_fixes` stage, so it loads before other mods.
 
 Each launch writes `PakUnmountFix.log` next to it. It says `applied` once the fix is in. If the fix can't be
 applied, it says why instead, ending with `- not applied`.

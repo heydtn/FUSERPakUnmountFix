@@ -1,6 +1,6 @@
 #pragma once
 // The optional entry points FUSERModLoader calls in a mod: every mod's FuserModScan, then every mod's FuserModApply,
-// in mod folder order. See FUSERModLoader's docs/WRITING_MODS.md.
+// in load order. See FUSERModLoader's docs/WRITING_MODS.md.
 
 #ifdef __cplusplus
 #define FUSER_MOD_EXPORT extern "C" __declspec(dllexport)
