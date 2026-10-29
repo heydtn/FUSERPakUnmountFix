@@ -432,7 +432,7 @@ __declspec(noinline) void *FPakFile_Delete_Hook(void *pak_file, uint32_t flags) 
 
 void stop_tracking(const char *why) {
     if (g_tracking.exchange(false)) {
-        log_message("%s, so unmounted paks are deleted right away again, as without the fix\n", why);
+        log_error("%s, so unmounted paks are deleted right away again, as without the fix\n", why);
     }
 }
 
@@ -878,10 +878,10 @@ CRITICAL_SECTION *learn_pak_list_lock(CRITICAL_SECTION *section) {
     if (!g_pak_list_lock.compare_exchange_strong(expected, section)) {
         return expected;
     }
-#if PAK_UNMOUNT_FIX_DEBUG
+#if PAK_UNMOUNT_FIX_DEBUG_LOGGING
     const auto *pak_platform_file = reinterpret_cast<const byte *>(section) - g_code.pak_list_critical_offset;
     const auto mounted = *reinterpret_cast<const int32_t *>(pak_platform_file + g_code.pak_files_offset + 8);
-    log_message("found the pak list lock, with %d paks mounted\n", mounted);
+    DEBUG_LOG("found the pak list lock, with %d paks mounted\n", mounted);
 #endif
     return section;
 }
@@ -936,8 +936,8 @@ void restore_all_return_addresses() {
     for (const ReaderSlot *reader = g_reader_slots.load(); reader; reader = reader->next) {
         restore_return_addresses(reader);
     }
-    log_message("the game is writing a crash report, so readers' return addresses are put back and the "
-                "fix is off\n");
+    DEBUG_LOG("the game is writing a crash report, so readers' return addresses are put back and the "
+              "fix is off\n");
 }
 
 using MiniDumpWriteDumpFunction = BOOL(WINAPI *)(HANDLE, DWORD, HANDLE, int, void *, void *, void *);
@@ -989,8 +989,8 @@ Function exported(HMODULE module, const char *name) {
 
 void apply_fix() {
     if (shadow_stacks_enforced()) {
-        log_message("shadow stacks are enforced, so return addresses can't be redirected "
-                    "- not applied\n");
+        log_error("shadow stacks are enforced, so return addresses can't be redirected "
+                   "- not applied\n");
         return;
     }
     HMODULE ntdll = GetModuleHandleW(L"ntdll.dll");
@@ -999,9 +999,9 @@ void apply_fix() {
     void **enter_slot = import_slot(g_exe, "EnterCriticalSection", false);
     if (!g_add_function_table || !g_grow_function_table ||
         reinterpret_cast<const byte *>(enter_slot) != g_code.wrapper_lock_slot) {
-        log_message("%s - not applied\n",
-                    g_add_function_table && g_grow_function_table ? "the pak lock isn't taken through the exe's import"
-                                                                   : "no growable function tables");
+        log_error("%s - not applied\n",
+                   g_add_function_table && g_grow_function_table ? "the pak lock isn't taken through the exe's import"
+                                                                  : "no growable function tables");
         return;
     }
 
@@ -1011,7 +1011,7 @@ void apply_fix() {
     g_release_work = CreateThreadpoolWork(release_paks, nullptr, nullptr);
     g_release_timer = CreateThreadpoolTimer(release_tick, nullptr, nullptr);
     if (!g_release_work || !g_release_timer) {
-        log_message("no thread-pool work - not applied\n");
+        log_error("no thread-pool work - not applied\n");
         return;
     }
 
@@ -1025,7 +1025,7 @@ void apply_fix() {
         g_tracking.store(false);
         decltype(g_enter_critical_section) hook;
         redirect_slot(enter_slot, g_enter_critical_section, &hook);
-        log_message("hooks not installed - not applied\n");
+        log_error("hooks not installed - not applied\n");
         return;
     }
     hook_crash_reports(g_exe);
@@ -1035,9 +1035,9 @@ void apply_fix() {
     memcpy(&due, &first, sizeof(due));
     SetThreadpoolTimer(g_release_timer, &due, 250, 50);
     if (!hook_crt_exit(g_exe)) {
-        log_message("the CRT's exit isn't imported, so paks are still deleted while the game exits\n");
+        log_error("the CRT's exit isn't imported, so paks are still deleted while the game exits\n");
     }
-    log_message("applied\n");
+    DEBUG_LOG("applied\n");
 }
 
 bool scan_exe() {
@@ -1062,7 +1062,7 @@ void ApplyPakUnmountFix() {
         g_found = scan_exe();
     }
     if (!g_found) {
-        log_message("%s - not applied\n", g_not_found);
+        log_error("%s - not applied\n", g_not_found);
     } else {
         apply_fix();
     }

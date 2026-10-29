@@ -39,8 +39,12 @@ std::wstring log_path() {
 
 }  // namespace
 
-void log_message(const char *format, ...) {
+void start_log() {
     std::call_once(g_log_opened, [] { g_log = _wfsopen(log_path().c_str(), L"w", _SH_DENYNO); });
+}
+
+void log_error(const char *format, ...) {
+    start_log();
     if (!g_log) {
         return;
     }

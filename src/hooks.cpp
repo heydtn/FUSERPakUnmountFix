@@ -83,18 +83,18 @@ uint8_t *find_function(const char *name, const char *pattern) {
 bool setup_hooks(const HookRequest *hooks, size_t count) {
     funchook_t *handle = funchook_create();
     if (!handle) {
-        log_message("funchook_create failed - not hooked\n");
+        log_error("funchook_create failed - not hooked\n");
         return false;
     }
     std::vector<void *> originals(count);
     for (size_t i = 0; i < count; i++) {
         originals[i] = *hooks[i].target;
         if (funchook_prepare(handle, hooks[i].target, hooks[i].hook) != FUNCHOOK_ERROR_SUCCESS) {
-            log_message("funchook_prepare failed for %p: %s - not hooked\n", originals[i],
-                        funchook_error_message(handle));
+            log_error("funchook_prepare failed for %p: %s - not hooked\n", originals[i],
+                       funchook_error_message(handle));
         } else if (!trampoline_within_jump_range(originals[i], *hooks[i].target)) {
-            log_message("funchook's trampoline %p is out of jump range of %p - not hooked\n", *hooks[i].target,
-                        originals[i]);
+            log_error("funchook's trampoline %p is out of jump range of %p - not hooked\n", *hooks[i].target,
+                       originals[i]);
         } else {
             continue;
         }
@@ -105,7 +105,7 @@ bool setup_hooks(const HookRequest *hooks, size_t count) {
         return false;
     }
     if (funchook_install(handle, 0) != FUNCHOOK_ERROR_SUCCESS) {
-        log_message("funchook_install failed: %s - not hooked\n", funchook_error_message(handle));
+        log_error("funchook_install failed: %s - not hooked\n", funchook_error_message(handle));
         return false;
     }
     return true;

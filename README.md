@@ -33,8 +33,7 @@ Fuser\Binaries\Win64\mods\PakUnmountFix\mod.ini
 
 `mod.ini` puts the mod in FUSERModLoader's `engine_fixes` stage, so it loads before other mods.
 
-Each launch writes `PakUnmountFix.log` next to it. It says `applied` once the fix is in. If the fix can't be
-applied, it says why instead, ending with `- not applied`.
+If the fix can't be applied, `PakUnmountFix.log` next to it says why.
 
 ## Building
 
@@ -46,8 +45,7 @@ cmake -S . -B build -A x64
 cmake --build build --config Release
 ```
 
-This builds `build\Release\PakUnmountFix.dll`. Configure with `-DPAK_UNMOUNT_FIX_DEBUG=ON` to also log each
-reader, stub and hooked handle class as they're found.
+This builds `build\Release\PakUnmountFix.dll`.
 
 ## Licence
 
