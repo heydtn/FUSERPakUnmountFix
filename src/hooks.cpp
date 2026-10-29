@@ -7,6 +7,7 @@
 #include <cstdlib>
 #include <string>
 #include <cstring>
+#include <optional>
 #include <vector>
 
 #include <funchook.h>
@@ -16,24 +17,24 @@
 
 namespace {
 
-constexpr int kAnyByte = -1;
+using PatternByte = std::optional<uint8_t>;
 
-std::vector<int> parse_pattern(const char *pattern) {
-    std::vector<int> bytes;
+std::vector<PatternByte> parse_pattern(const char *pattern) {
+    std::vector<PatternByte> bytes;
     for (size_t i = 0; pattern[i] && pattern[i + 1]; i += 2) {
         if (pattern[i] == '?') {
-            bytes.push_back(kAnyByte);
+            bytes.emplace_back();
             continue;
         }
         const char digits[3] = {pattern[i], pattern[i + 1], '\0'};
-        bytes.push_back(static_cast<int>(std::strtol(digits, nullptr, 16)));
+        bytes.emplace_back(static_cast<uint8_t>(std::strtoul(digits, nullptr, 16)));
     }
     return bytes;
 }
 
-bool matches_at(const uint8_t *at, const std::vector<int> &bytes) {
+bool matches_at(const uint8_t *at, const std::vector<PatternByte> &bytes) {
     for (size_t i = 0; i < bytes.size(); i++) {
-        if (bytes[i] != kAnyByte && at[i] != bytes[i]) {
+        if (bytes[i] && at[i] != *bytes[i]) {
             return false;
         }
     }
@@ -53,14 +54,14 @@ bool trampoline_within_jump_range(const void *function, const void *trampoline) 
 }  // namespace
 
 uint8_t *find_function([[maybe_unused]] const char *name, const char *pattern, uint8_t *start, size_t size) {
-    const std::vector<int> bytes = parse_pattern(pattern);
+    const std::vector<PatternByte> bytes = parse_pattern(pattern);
     if (bytes.empty() || bytes.size() > size) {
         return nullptr;
     }
     const size_t last = size - bytes.size();
     for (size_t offset = 0; offset <= last; offset++) {
-        if (bytes[0] != kAnyByte) {
-            const void *next = std::memchr(start + offset, bytes[0], last - offset + 1);
+        if (bytes[0]) {
+            const void *next = std::memchr(start + offset, *bytes[0], last - offset + 1);
             if (!next) {
                 break;
             }
@@ -106,7 +107,8 @@ bool setup_hooks(const HookRequest *hooks, size_t count) {
         return false;
     }
     if (funchook_install(handle, 0) != FUNCHOOK_ERROR_SUCCESS) {
-        log_error(std::string("funchook_install failed: ") + funchook_error_message(handle) + " - not hooked");
+        log_error(std::string("funchook_install failed: ") + funchook_error_message(handle) +
+                  " - may be partly hooked");
         return false;
     }
     return true;
