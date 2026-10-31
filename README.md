@@ -1,12 +1,12 @@
 # PakUnmountFix
 
 A FUSER mod that fixes the game crashing when you scroll the song list quickly with custom songs installed. It needs
-[FUSERModLoader](https://github.com/heydtn/FUSERModLoader).
+[FUSERNativeLoader](https://github.com/unreality/FUSERNativeLoader).
 
 ## Installing
 
-Once [FUSERModLoader is installed](https://github.com/heydtn/FUSERModLoader#installing), unzip the release's
-`PakUnmountFix.zip` into `Fuser\Binaries\Win64\mods`. The file structure should be:
+Once [FUSERNativeLoader is installed](https://github.com/unreality/FUSERNativeLoader#using-the-mod), unzip the
+release's `PakUnmountFix.zip` into `Fuser\Binaries\Win64\mods`. The file structure should be:
 
 ```
 Fuser\Binaries\Win64\mods\PakUnmountFix\
@@ -14,7 +14,8 @@ Fuser\Binaries\Win64\mods\PakUnmountFix\
   mod.ini
 ```
 
-If the fix can't be applied, `PakUnmountFix.log` next to it says why.
+If the fix can't be applied, `Fuser\Binaries\Win64\FuserNative.log` says why, on lines tagged
+`[PakUnmountFix]`.
 
 ## The crash
 
@@ -37,8 +38,7 @@ Unmount's delete is deferred until nothing can still be using the pak:
 
 ## Building
 
-Needs Visual Studio 2022 with the **Desktop development with C++** workload, and git on `PATH`, since CMake
-downloads funchook while configuring. From a Developer PowerShell:
+Needs Visual Studio 2022 with the **Desktop development with C++** workload. From a Developer PowerShell:
 
 ```
 cmake -S . -B build -A x64
@@ -56,5 +56,12 @@ Releases are published by hand: on GitHub, open Actions, pick the workflow and u
 
 ## Licence
 
-MIT; see [LICENSE](LICENSE). Function hooking is done by [funchook](https://github.com/kubo/funchook) v1.1.3
-(GPLv2 or later with a linking exception), which is built from source and linked in.
+MIT; see [LICENSE](LICENSE). `include/fnl_mod.h` is FUSERNativeLoader's SDK header, copied unchanged from
+[its `sdk` folder](https://github.com/unreality/FUSERNativeLoader/tree/70ff046fd3ff10df86189912b417f667780044a5/sdk)
+(MIT).
+
+## AI Usage Disclosure
+
+This mod's code, behavior and methods were reviewed by a human who has a career in programming and knows binary
+analysis. The binary analysis was AI-assisted, and the code was AI-generated, then reviewed, adjusted and modified by
+that human.

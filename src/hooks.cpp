@@ -1,115 +1,38 @@
-#define NOMINMAX
-#define WIN32_LEAN_AND_MEAN
-#include <Windows.h>
-
 #include "hooks.hpp"
 
-#include <cstdlib>
 #include <string>
-#include <cstring>
-#include <optional>
-#include <vector>
-
-#include <funchook.h>
 
 #include "log.hpp"
-#include "pe_image.hpp"
+#include "mod.hpp"
 
-namespace {
-
-using PatternByte = std::optional<uint8_t>;
-
-std::vector<PatternByte> parse_pattern(const char *pattern) {
-    std::vector<PatternByte> bytes;
-    for (size_t i = 0; pattern[i] && pattern[i + 1]; i += 2) {
-        if (pattern[i] == '?') {
-            bytes.emplace_back();
-            continue;
-        }
-        const char digits[3] = {pattern[i], pattern[i + 1], '\0'};
-        bytes.emplace_back(static_cast<uint8_t>(std::strtoul(digits, nullptr, 16)));
+uint8_t *find_function(const char *name, const char *pattern, uint8_t *start, size_t size) {
+    uint8_t *found = g_loader->find_pattern(g_this_mod, name, pattern, start, size);
+    if (found) {
+        DEBUG_LOG(std::string(name) + " found at exe+0x" +
+                  hex_text(static_cast<std::uintptr_t>(found - g_loader->game->base)));
+    } else {
+        DEBUG_LOG(std::string(name) + " not found");
     }
-    return bytes;
+    return found;
 }
 
-bool matches_at(const uint8_t *at, const std::vector<PatternByte> &bytes) {
-    for (size_t i = 0; i < bytes.size(); i++) {
-        if (bytes[i] && at[i] != *bytes[i]) {
-            return false;
-        }
+std::string other_owners(const void *at, size_t size) {
+    if (!FNL_API_HAS(g_loader, changed)) {
+        return {};
     }
-    return true;
+    char owners[256] = {};
+    const size_t count = g_loader->changed(g_this_mod, at, size, FNL_CHANGED_BY_OTHERS, owners, sizeof(owners));
+    return count != 0 && count != FNL_CHANGED_ERROR ? std::string(owners) : std::string();
 }
 
-uint8_t *exe_base() {
-    return reinterpret_cast<uint8_t *>(GetModuleHandleW(nullptr));
+bool setup_hooks(const FnlHook *hooks, size_t count) {
+    return g_loader->hook(g_this_mod, hooks, count) != 0;
 }
 
-bool trampoline_within_jump_range(const void *function, const void *trampoline) {
-    const int64_t distance = static_cast<int64_t>(reinterpret_cast<uintptr_t>(trampoline)) -
-                             static_cast<int64_t>(reinterpret_cast<uintptr_t>(function) + 5);
-    return distance > -0x7FFF0000LL && distance < 0x7FFF0000LL;
+bool redirect_import_pointer(const char *dll, const char *function, void *hook, void **original) {
+    return g_loader->redirect_import(g_this_mod, dll, function, hook, original) != 0;
 }
 
-}  // namespace
-
-uint8_t *find_function([[maybe_unused]] const char *name, const char *pattern, uint8_t *start, size_t size) {
-    const std::vector<PatternByte> bytes = parse_pattern(pattern);
-    if (bytes.empty() || bytes.size() > size) {
-        return nullptr;
-    }
-    const size_t last = size - bytes.size();
-    for (size_t offset = 0; offset <= last; offset++) {
-        if (bytes[0]) {
-            const void *next = std::memchr(start + offset, *bytes[0], last - offset + 1);
-            if (!next) {
-                break;
-            }
-            offset = static_cast<const uint8_t *>(next) - start;
-        }
-        if (matches_at(start + offset, bytes)) {
-            DEBUG_LOG(std::string(name) + " found at exe+0x" +
-                      hex_text(static_cast<std::uintptr_t>(start + offset - exe_base())));
-            return start + offset;
-        }
-    }
-    DEBUG_LOG(std::string(name) + " not found");
-    return nullptr;
-}
-
-uint8_t *find_function(const char *name, const char *pattern) {
-    uint8_t *exe = exe_base();
-    return find_function(name, pattern, exe, nt_headers(exe)->OptionalHeader.SizeOfImage);
-}
-
-bool setup_hooks(const HookRequest *hooks, size_t count) {
-    funchook_t *handle = funchook_create();
-    if (!handle) {
-        log_error("funchook_create failed - not hooked");
-        return false;
-    }
-    std::vector<void *> originals(count);
-    for (size_t i = 0; i < count; i++) {
-        originals[i] = *hooks[i].target;
-        if (funchook_prepare(handle, hooks[i].target, hooks[i].hook) != FUNCHOOK_ERROR_SUCCESS) {
-            log_error("funchook_prepare failed for " + pointer_text(originals[i]) + ": " +
-                      funchook_error_message(handle) + " - not hooked");
-        } else if (!trampoline_within_jump_range(originals[i], *hooks[i].target)) {
-            log_error("funchook's trampoline " + pointer_text(*hooks[i].target) + " is out of jump range of " +
-                      pointer_text(originals[i]) + " - not hooked");
-        } else {
-            continue;
-        }
-        funchook_destroy(handle);
-        for (size_t j = 0; j <= i; j++) {
-            *hooks[j].target = originals[j];
-        }
-        return false;
-    }
-    if (funchook_install(handle, 0) != FUNCHOOK_ERROR_SUCCESS) {
-        log_error(std::string("funchook_install failed: ") + funchook_error_message(handle) +
-                  " - may be partly hooked");
-        return false;
-    }
-    return true;
+bool write_pointer(void **slot, void *value) {
+    return g_loader->patch(g_this_mod, slot, &value, sizeof(value)) != 0;
 }

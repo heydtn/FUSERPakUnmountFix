@@ -26,6 +26,7 @@
 
 #include "hooks.hpp"
 #include "log.hpp"
+#include "mod.hpp"
 #include "pe_image.hpp"
 
 using byte = uint8_t;
@@ -92,15 +93,26 @@ uint32_t read_u32(const byte *at) {
     return value;
 }
 
-// Why the pak code wasn't found
-const char *g_not_found = nullptr;
+// Why the pak code wasn't found, or can't be used
+std::string g_not_found;
 
-bool not_found(const char *why) {
+enum class PakCodeSearch { found, missing, changed_by_other_mods };
+
+PakCodeSearch not_found(const char *why) {
     g_not_found = why;
-    return false;
+    return PakCodeSearch::missing;
 }
 
-bool find_pak_code(byte *exe, size_t size, PakCode &code) {
+bool changed_by_other_mods(const char *what, const byte *at, size_t size) {
+    const std::string owners = other_owners(at, size);
+    if (owners.empty()) {
+        return false;
+    }
+    g_not_found = std::string(what) + " was changed by " + owners;
+    return true;
+}
+
+PakCodeSearch find_pak_code(byte *exe, size_t size, PakCode &code) {
     byte *wrapper = find_function(
         "FindFileInPakFiles_Wrapper",
         "33ff"              // xor    edi,edi
@@ -121,6 +133,9 @@ bool find_pak_code(byte *exe, size_t size, PakCode &code) {
         size);
     if (!wrapper) {
         return not_found("the FindFileInPakFiles wrapper wasn't found");
+    }
+    if (changed_by_other_mods("the FindFileInPakFiles wrapper", wrapper + 0x05, 0x26)) {
+        return PakCodeSearch::changed_by_other_mods;
     }
     code.wrapper_lock_slot = rel32_target(wrapper + 0x23);
     code.wrapper_lock_return = wrapper + 0x27;
@@ -183,6 +198,10 @@ bool find_pak_code(byte *exe, size_t size, PakCode &code) {
     if (!counts || !delete_call) {
         return not_found("Unmount isn't as expected");
     }
+    if (changed_by_other_mods("Unmount's handle counts", counts + 5, 19) ||
+        changed_by_other_mods("Unmount's delete call", delete_call + 28, 4)) {
+        return PakCodeSearch::changed_by_other_mods;
+    }
     code.async_handles_offset = read_u32(counts + 5);
     code.sync_handles_offset = read_u32(counts + 20);
     code.unmount_delete_return = delete_call + 32;
@@ -193,6 +212,9 @@ bool find_pak_code(byte *exe, size_t size, PakCode &code) {
 
     const byte *count_up = find_function("FPakPlatformFile_CreatePakFileHandle count", "f0ff86????0000",
                                          code.create_pak_file_handle, 0x400);
+    if (count_up && changed_by_other_mods("CreatePakFileHandle's handle count", count_up + 3, 4)) {
+        return PakCodeSearch::changed_by_other_mods;
+    }
     const bool destructor_matches = find_function(
         "FPakFile scalar deleting destructor",
         "48895c2408"        // mov    [rsp+8],rbx
@@ -207,7 +229,7 @@ bool find_pak_code(byte *exe, size_t size, PakCode &code) {
         return not_found(destructor_matches ? "CreatePakFileHandle's handle count isn't as expected"
                                             : "FPakFile's destructor isn't as expected");
     }
-    return true;
+    return PakCodeSearch::found;
 }
 
 constexpr uint64_t kNotReading = 0;
@@ -302,7 +324,6 @@ std::atomic<bool> g_returns_restored{false};
 
 byte *g_exe = nullptr;
 PakCode g_code;
-bool g_found = false;
 
 // The engine's PakListCritical, learned at the first Mount
 std::atomic<CRITICAL_SECTION *> g_pak_list_lock{nullptr};
@@ -441,18 +462,20 @@ __declspec(noinline) void *FPakFile_Delete_Hook(void *pak_file, uint32_t flags) 
 
 void stop_tracking(const char *why) {
     if (g_tracking.exchange(false)) {
-        log_error(std::string(why) + ", so unmounted paks are deleted right away again, as without the fix");
+        log_warning(std::string(why) + ", so unmounted paks are deleted right away again, as without the fix");
     }
 }
 
 std::string describe_address(const void *address) {
     void *module = nullptr;
-    char path[MAX_PATH] = "?";
+    wchar_t path[MAX_PATH] = L"?";
     if (RtlPcToFileHeader(const_cast<void *>(address), &module) && module) {
-        GetModuleFileNameA(static_cast<HMODULE>(module), path, MAX_PATH);
+        GetModuleFileNameW(static_cast<HMODULE>(module), path, MAX_PATH);
     }
-    const char *name = strrchr(path, '\\');
-    return std::string(name ? name + 1 : path) + "+" +
+    const wchar_t *slash = wcsrchr(path, L'\\');
+    char utf8_name[MAX_PATH * 3] = {};
+    WideCharToMultiByte(CP_UTF8, 0, slash ? slash + 1 : path, -1, utf8_name, sizeof(utf8_name), nullptr, nullptr);
+    return std::string(utf8_name) + "+" +
            hex_text(reinterpret_cast<std::uintptr_t>(address) - reinterpret_cast<std::uintptr_t>(module));
 }
 
@@ -477,47 +500,36 @@ void crt_cexit_hook() {
     g_crt_cexit();
 }
 
-void **import_slot(byte *module, const char *function, bool crt_only) {
-    void **found = nullptr;
+struct Import {
+    const char *dll = nullptr;
+    void **slot = nullptr;
+};
+
+Import find_import(byte *module, const char *function) {
+    Import found;
     for_each_import(module, [&](const char *dll, const char *name, void **slot) {
-        const bool crt = _strnicmp(dll, "api-ms-win-crt-runtime", 22) == 0 || _stricmp(dll, "ucrtbase.dll") == 0;
-        if ((crt || !crt_only) && strcmp(name, function) == 0) {
-            found = slot;
+        if (strcmp(name, function) == 0) {
+            found = {dll, slot};
         }
     });
     return found;
 }
 
-std::mutex g_redirect_lock;
-
 template <typename Function>
-bool redirect_slot(void **slot, Function hook, Function *original) {
-    std::lock_guard guard(g_redirect_lock);
-    MEMORY_BASIC_INFORMATION page;
-    if (!VirtualQuery(slot, &page, sizeof(page))) {
-        return false;
-    }
-    const DWORD executable = PAGE_EXECUTE | PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE | PAGE_EXECUTE_WRITECOPY;
-    DWORD protection;
-    if (!VirtualProtect(slot, sizeof(void *), (page.Protect & executable) ? PAGE_EXECUTE_READWRITE : PAGE_READWRITE,
-                        &protection)) {
-        return false;
-    }
-    *original = reinterpret_cast<Function>(*slot);
-    _ReadWriteBarrier();
-    *slot = reinterpret_cast<void *>(hook);
-    VirtualProtect(slot, sizeof(void *), protection, &protection);
-    return true;
+bool redirect_crt_import(const char *function, Function hook, Function *original) {
+    return redirect_import("api-ms-win-crt-runtime", function, hook, original) ||
+           redirect_import("ucrtbase", function, hook, original);
 }
 
-bool hook_crt_exit(byte *module) {
-    void **exit_slot = import_slot(module, "exit", true);
-    void **cexit_slot = import_slot(module, "_cexit", true);
-    if (!exit_slot || !cexit_slot) {
-        return false;
+std::string redirect_crt_exits() {
+    std::string not_redirected;
+    if (!redirect_crt_import("exit", &crt_exit_hook, &g_crt_exit)) {
+        not_redirected = "exit";
     }
-    return redirect_slot(exit_slot, &crt_exit_hook, &g_crt_exit) &&
-           redirect_slot(cexit_slot, &crt_cexit_hook, &g_crt_cexit);
+    if (!redirect_crt_import("_cexit", &crt_cexit_hook, &g_crt_cexit)) {
+        not_redirected += not_redirected.empty() ? "_cexit" : ", _cexit";
+    }
+    return not_redirected;
 }
 
 using HandleDestructor = void *(*)(void *handle, uint32_t flags);
@@ -566,13 +578,13 @@ void hook_handle_destructor(void **vtable) {
         return;
     }
     guard.unlock();
-    DEBUG_LOG("handle destructor " + describe_address(reinterpret_cast<const void *>(g_handle_destructors[index])) +
+    DEBUG_LOG("Handle destructor " + describe_address(reinterpret_cast<const void *>(g_handle_destructors[index])) +
               " hooked through its vtable " + describe_address(vtable));
 }
 
 void *CreatePakFileHandle_Hook(void *pak_platform_file, const wchar_t *filename, void *pak_file, const void *entry) {
     void *handle = CreatePakFileHandle(pak_platform_file, filename, pak_file, entry);
-    if (handle) {
+    if (handle && g_tracking.load(std::memory_order_relaxed)) {
         hook_handle_destructor(*static_cast<void ***>(handle));
     }
     return handle;
@@ -723,7 +735,7 @@ byte *return_stub_for(const byte *return_to) {
     }
     g_stubs.emplace(return_to, code);
     guard.unlock();
-    DEBUG_LOG("readers returning to " + describe_address(return_to) + " are redirected through a stub");
+    DEBUG_LOG("Readers returning to " + describe_address(return_to) + " are redirected through a stub");
     return code;
 }
 
@@ -758,7 +770,7 @@ void log_lock_call_once([[maybe_unused]] const byte *lock_call) {
             return;
         }
     }
-    DEBUG_LOG("reader found, taking the pak lock at " + describe_address(lock_call) + " (in the function at " +
+    DEBUG_LOG("Reader found, taking the pak lock at " + describe_address(lock_call) + " (in the function at " +
               describe_address(function_start(lock_call)) + ")");
 #endif
 }
@@ -902,7 +914,7 @@ CRITICAL_SECTION *learn_pak_list_lock(CRITICAL_SECTION *section) {
     const auto *pak_platform_file = reinterpret_cast<const byte *>(section) - g_code.pak_list_critical_offset;
     int32_t mounted;
     std::memcpy(&mounted, pak_platform_file + g_code.pak_files_offset + 8, sizeof(mounted));
-    DEBUG_LOG("found the pak list lock, with " + std::to_string(mounted) + " paks mounted");
+    DEBUG_LOG("Found the pak list lock, with " + std::to_string(mounted) + " paks mounted");
     if (mounted != 0) {
         stop_tracking("paks were mounted before the fix was applied");
     }
@@ -960,7 +972,7 @@ void restore_all_return_addresses() {
     for (const ReaderSlot *reader = g_reader_slots.load(); reader; reader = reader->next) {
         restore_return_addresses(reader);
     }
-    log_error("the game is writing a crash report, so readers' return addresses are put back and the fix is off");
+    log_warning("Crash detected, rewinding pak reader return addresses");
 }
 
 decltype(&MiniDumpWriteDump) g_minidump_write_dump;
@@ -981,23 +993,25 @@ BOOL WINAPI stack_walk64_hook(DWORD machine, HANDLE process, HANDLE thread, LPST
     return g_stack_walk64(machine, process, thread, frame, context, read, function_table, module_base, translate);
 }
 
-void **dbghelp_slot(byte *module, const char *function) {
-    void **found = import_slot(module, function, false);
+template <typename Function>
+void redirect_dbghelp(byte *module, const char *function, Function hook, Function *original) {
+    if (redirect_import(nullptr, function, hook, original)) {
+        return;
+    }
+    void **delay_slot = nullptr;
     for_each_delay_import(module, [&](const char *, const char *name, void **slot) {
         if (strcmp(name, function) == 0) {
-            found = slot;
+            delay_slot = slot;
         }
     });
-    return found;
+    if (delay_slot) {
+        redirect_slot(delay_slot, hook, original);
+    }
 }
 
 void hook_crash_reports(byte *module) {
-    if (void **slot = dbghelp_slot(module, "MiniDumpWriteDump")) {
-        redirect_slot(slot, &minidump_write_dump_hook, &g_minidump_write_dump);
-    }
-    if (void **slot = dbghelp_slot(module, "StackWalk64")) {
-        redirect_slot(slot, &stack_walk64_hook, &g_stack_walk64);
-    }
+    redirect_dbghelp(module, "MiniDumpWriteDump", &minidump_write_dump_hook, &g_minidump_write_dump);
+    redirect_dbghelp(module, "StackWalk64", &stack_walk64_hook, &g_stack_walk64);
 }
 
 bool shadow_stacks_enforced() {
@@ -1011,22 +1025,22 @@ Function exported(HMODULE module, const char *name) {
     return reinterpret_cast<Function>(GetProcAddress(module, name));
 }
 
-void apply_fix() {
+int apply_fix() {
     if (shadow_stacks_enforced()) {
-        log_error("shadow stacks are enforced, so return addresses can't be redirected - not applied");
-        return;
+        log_error("Shadow stacks are enforced, so return addresses can't be redirected - pak unmount fix not applied");
+        return FNL_FAILED;
     }
     HMODULE ntdll = GetModuleHandleW(L"ntdll.dll");
     g_add_function_table = exported<AddGrowableFunctionTable>(ntdll, "RtlAddGrowableFunctionTable");
     g_grow_function_table = exported<GrowFunctionTable>(ntdll, "RtlGrowFunctionTable");
-    void **enter_slot = import_slot(g_exe, "EnterCriticalSection", false);
+    const Import enter_import = find_import(g_exe, "EnterCriticalSection");
     if (!g_add_function_table || !g_grow_function_table ||
-        reinterpret_cast<const byte *>(enter_slot) != g_code.wrapper_lock_slot) {
+        reinterpret_cast<const byte *>(enter_import.slot) != g_code.wrapper_lock_slot) {
         log_error(std::string(g_add_function_table && g_grow_function_table
-                                  ? "the pak lock isn't taken through the exe's import"
-                                  : "no growable function tables") +
-                  " - not applied");
-        return;
+                                  ? "The pak lock isn't taken through the exe's import"
+                                  : "No growable function tables") +
+                  " - pak unmount fix not applied");
+        return FNL_FAILED;
     }
 
     FPakFile_Delete = reinterpret_cast<decltype(FPakFile_Delete)>(g_code.delete_pak_file);
@@ -1035,39 +1049,36 @@ void apply_fix() {
     g_release_work = CreateThreadpoolWork(release_paks, nullptr, nullptr);
     g_release_timer = CreateThreadpoolTimer(release_tick, nullptr, nullptr);
     if (!g_release_work || !g_release_timer) {
-        log_error("no thread-pool work - not applied");
-        return;
+        log_error("No thread-pool work - pak unmount fix not applied");
+        return FNL_FAILED;
     }
 
-    if (!redirect_slot(enter_slot, &enter_critical_section_hook, &g_enter_critical_section)) {
-        log_error("the pak lock's import couldn't be redirected - not applied");
-        return;
-    }
-    const HookRequest requests[] = {
-        hook_request(CreatePakFileHandle, &CreatePakFileHandle_Hook),
-        hook_request(FPakFile_Delete, &FPakFile_Delete_Hook),
-        hook_request(Mount, &Mount_Hook),
+    const FnlHook requests[] = {
+        hook_request("FPakPlatformFile::CreatePakFileHandle", CreatePakFileHandle, &CreatePakFileHandle_Hook),
+        hook_request("FPakFile scalar deleting destructor", FPakFile_Delete, &FPakFile_Delete_Hook),
+        hook_request("FPakPlatformFile::Mount", Mount, &Mount_Hook),
     };
     if (!setup_hooks(requests, std::size(requests))) {
+        log_error("Hooks not installed - pak unmount fix not applied");
+        return FNL_FAILED;
+    }
+    if (!redirect_import(enter_import.dll, "EnterCriticalSection", &enter_critical_section_hook,
+                         &g_enter_critical_section)) {
         g_tracking.store(false);
-        decltype(g_enter_critical_section) hook;
-        redirect_slot(enter_slot, g_enter_critical_section, &hook);
-        log_error("hooks not installed - not applied");
-        return;
+        log_error("The pak lock's import couldn't be redirected - pak unmount fix not applied");
+        return FNL_FAILED;
     }
     hook_crash_reports(g_exe);
+    if (const std::string not_redirected = redirect_crt_exits(); !not_redirected.empty()) {
+        log_warning("Unable to redirect CRT functions [" + not_redirected +
+                    "]. A pak unmount could cause a crash when the game exits. Continuing.");
+    }
 
     const int64_t first = -250LL * 10000;
     FILETIME due{static_cast<DWORD>(first), static_cast<DWORD>(static_cast<uint64_t>(first) >> 32)};
     SetThreadpoolTimer(g_release_timer, &due, 250, 50);
-    if (!hook_crt_exit(g_exe)) {
-        log_error("the CRT's exit isn't imported, so paks are still deleted while the game exits");
-    }
-    DEBUG_LOG("applied");
-}
-
-bool scan_exe() {
-    return find_pak_code(g_exe, nt_headers(g_exe)->OptionalHeader.SizeOfImage, g_code);
+    DEBUG_LOG("Applied");
+    return FNL_OK;
 }
 
 } // namespace
@@ -1078,18 +1089,17 @@ extern "C" void pak_return_exit(void **stack) {
     publish_thread_epoch(before);
 }
 
-void ScanForPakUnmountFix() {
-    g_exe = reinterpret_cast<byte *>(GetModuleHandleW(nullptr));
-    g_found = scan_exe();
-}
-
-void ApplyPakUnmountFix() {
-    if (!g_found) {
-        g_found = scan_exe();
+int ApplyPakUnmountFix() {
+    g_exe = g_loader->game->base;
+    switch (find_pak_code(g_exe, g_loader->game->image_size, g_code)) {
+    case PakCodeSearch::missing:
+        log_warning(g_not_found + " - pak unmount fix not applied");
+        return FNL_UNSUPPORTED;
+    case PakCodeSearch::changed_by_other_mods:
+        log_error(g_not_found + " - pak unmount fix not applied");
+        return FNL_FAILED;
+    case PakCodeSearch::found:
+        break;
     }
-    if (!g_found) {
-        log_error(std::string(g_not_found ? g_not_found : "the pak code wasn't found") + " - not applied");
-    } else {
-        apply_fix();
-    }
+    return apply_fix();
 }

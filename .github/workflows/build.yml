@@ -59,6 +59,7 @@ jobs:
         $release = "${{github.workspace}}/release"
         New-Item -ItemType Directory -Force -Path "$release/PakUnmountFix" | Out-Null
         Copy-Item "${{github.workspace}}/artifact/*" -Destination "$release/PakUnmountFix"
+        Add-Content -Path "$release/PakUnmountFix/mod.ini" -Value "version=$version"
         Compress-Archive -Path "$release/PakUnmountFix" -DestinationPath PakUnmountFix.zip
         gh release create $version PakUnmountFix.zip `
           --target $env:GITHUB_SHA --title $version --generate-notes
