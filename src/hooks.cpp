@@ -8,8 +8,9 @@
 uint8_t *find_function(const char *name, const char *pattern, uint8_t *start, size_t size) {
     uint8_t *found = g_loader->find_pattern(g_this_mod, name, pattern, start, size);
     if (found) {
-        DEBUG_LOG(std::string(name) + " found at exe+0x" +
-                  hex_text(static_cast<std::uintptr_t>(found - g_loader->game->base)));
+        DEBUG_LOG(
+            std::string(name) + " found at exe+0x" + hex_text(static_cast<std::uintptr_t>(found - g_loader->game->base))
+        );
     } else {
         DEBUG_LOG(std::string(name) + " not found");
     }

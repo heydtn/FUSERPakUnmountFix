@@ -6,16 +6,17 @@
 #define NOMINMAX
 #define WIN32_LEAN_AND_MEAN
 #include <Windows.h>
+
 #include <DbgHelp.h>
 
 #include "pak_unmount_fix.hpp"
 
+#include <intrin.h>
 #include <algorithm>
 #include <array>
 #include <atomic>
 #include <cstdio>
 #include <cstring>
-#include <intrin.h>
 #include <mutex>
 #include <shared_mutex>
 #include <string>
@@ -47,8 +48,8 @@ size_t unwind_codes_size(const byte *info) {
 
 const RUNTIME_FUNCTION *chained_entry(const byte *info) {
     return (info[0] >> 3) & UNW_FLAG_CHAININFO
-        ? reinterpret_cast<const RUNTIME_FUNCTION *>(info + 4 + unwind_codes_size(info))
-        : nullptr;
+               ? reinterpret_cast<const RUNTIME_FUNCTION *>(info + 4 + unwind_codes_size(info))
+               : nullptr;
 }
 
 uint8_t unwind_version(const byte *info) {
@@ -115,22 +116,23 @@ bool changed_by_other_mods(const char *what, const byte *at, size_t size) {
 PakCodeSearch find_pak_code(byte *exe, size_t size, PakCode &code) {
     byte *wrapper = find_function(
         "FindFileInPakFiles_Wrapper",
-        "33ff"              // xor    edi,edi
-        "488d59??"          // lea    rbx,[rcx+PakListCritical]
-        "4c8bf1"            // mov    r14,rcx
-        "48897c2420"        // mov    [rsp+20h],rdi                  (the copy)
-        "488bcb"            // mov    rcx,rbx
-        "48897c2428"        // mov    [rsp+28h],rdi
-        "4d8bf9"            // mov    r15,r9
-        "4d8be0"            // mov    r12,r8
-        "4c8bea"            // mov    r13,rdx
-        "8bf7"              // mov    esi,edi
-        "ff15????????"      // call   [EnterCriticalSection]
-        "49636e??"          // movsxd rbp,[r14+PakFiles.Num]
-        "85ed"              // test   ebp,ebp
-        "7437",             // je     (empty list)
+        "33ff"          // xor    edi,edi
+        "488d59??"      // lea    rbx,[rcx+PakListCritical]
+        "4c8bf1"        // mov    r14,rcx
+        "48897c2420"    // mov    [rsp+20h],rdi                  (the copy)
+        "488bcb"        // mov    rcx,rbx
+        "48897c2428"    // mov    [rsp+28h],rdi
+        "4d8bf9"        // mov    r15,r9
+        "4d8be0"        // mov    r12,r8
+        "4c8bea"        // mov    r13,rdx
+        "8bf7"          // mov    esi,edi
+        "ff15????????"  // call   [EnterCriticalSection]
+        "49636e??"      // movsxd rbp,[r14+PakFiles.Num]
+        "85ed"          // test   ebp,ebp
+        "7437",         // je     (empty list)
         exe,
-        size);
+        size
+    );
     if (!wrapper) {
         return not_found("the FindFileInPakFiles wrapper wasn't found");
     }
@@ -146,55 +148,62 @@ PakCodeSearch find_pak_code(byte *exe, size_t size, PakCode &code) {
     const size_t near_size = std::min<size_t>(0x80000, exe + size - near_from);
     code.mount = find_function(
         "FPakPlatformFile_Mount",
-        "488bc4"            // mov    rax,rsp
-        "44894018"          // mov    [rax+18h],r8d
-        "48894808"          // mov    [rax+8],rcx
-        "55534157"          // push   rbp; push rbx; push r15
-        "488d68??"          // lea    rbp,[rax-xx]
-        "4881ec????????"    // sub    rsp,xx
-        "48897010"          // mov    [rax+10h],rsi
-        "4533c0"            // xor    r8d,r8d
-        "488978e0"          // mov    [rax-20h],rdi
-        "498bf1"            // mov    rsi,r9
-        "4c8960d8"          // mov    [rax-28h],r12
-        "488bf9"            // mov    rdi,rcx                        (this)
-        "488b4908",         // mov    rcx,[rcx+8]                    (the lower level platform file)
+        "488bc4"          // mov    rax,rsp
+        "44894018"        // mov    [rax+18h],r8d
+        "48894808"        // mov    [rax+8],rcx
+        "55534157"        // push   rbp; push rbx; push r15
+        "488d68??"        // lea    rbp,[rax-xx]
+        "4881ec????????"  // sub    rsp,xx
+        "48897010"        // mov    [rax+10h],rsi
+        "4533c0"          // xor    r8d,r8d
+        "488978e0"        // mov    [rax-20h],rdi
+        "498bf1"          // mov    rsi,r9
+        "4c8960d8"        // mov    [rax-28h],r12
+        "488bf9"          // mov    rdi,rcx                        (this)
+        "488b4908",       // mov    rcx,[rcx+8]                    (the lower level platform file)
         near_from,
-        near_size);
+        near_size
+    );
     code.create_pak_file_handle = find_function(
         "FPakPlatformFile_CreatePakFileHandle",
         "4c8bdc574881ec90000000488b05????????4833c44889442470488b410849895b0849896b10498be9",
         near_from,
-        near_size);
+        near_size
+    );
     byte *unmount = find_function(
         "FPakPlatformFile_Unmount",
         "40535557415441554883ec30833d????????004c8be2488be97422488b1d",
         near_from,
-        near_size);
+        near_size
+    );
     if (!code.mount || !code.create_pak_file_handle || !unmount) {
-        return not_found(!code.mount ? "Mount wasn't found"
-                         : !unmount  ? "Unmount wasn't found"
-                                     : "CreatePakFileHandle wasn't found");
+        return not_found(
+            !code.mount ? "Mount wasn't found"
+            : !unmount  ? "Unmount wasn't found"
+                        : "CreatePakFileHandle wasn't found"
+        );
     }
 
     byte *counts = find_function(
         "FPakPlatformFile_Unmount handle counts",
-        "f0440fb1a9????0000" // lock cmpxchg [rcx+async count],r13d
+        "f0440fb1a9????0000"  // lock cmpxchg [rcx+async count],r13d
         "????????????"
-        "f0440fb1a9????0000", // lock cmpxchg [rcx+sync count],r13d
+        "f0440fb1a9????0000",  // lock cmpxchg [rcx+sync count],r13d
         unmount,
-        0x200);
+        0x200
+    );
     byte *delete_call = find_function(
         "FPakPlatformFile_Unmount delete",
-        "488d0d????????"    // lea    rcx,[pak signatures lock]
-        "ff15????????"      // call   [LeaveCriticalSection]
-        "488b4e08"          // mov    rcx,[rsi+8]                    (the FPakFile being unmounted)
-        "4885c9"            // test   rcx,rcx
-        "740a"              // je     (no pak)
-        "ba01000000"        // mov    edx,1                          (delete flag)
-        "e8????????",       // call   FPakFile's scalar deleting destructor
+        "488d0d????????"  // lea    rcx,[pak signatures lock]
+        "ff15????????"    // call   [LeaveCriticalSection]
+        "488b4e08"        // mov    rcx,[rsi+8]                    (the FPakFile being unmounted)
+        "4885c9"          // test   rcx,rcx
+        "740a"            // je     (no pak)
+        "ba01000000"      // mov    edx,1                          (delete flag)
+        "e8????????",     // call   FPakFile's scalar deleting destructor
         unmount,
-        0x200);
+        0x200
+    );
     if (!counts || !delete_call) {
         return not_found("Unmount isn't as expected");
     }
@@ -210,24 +219,31 @@ PakCodeSearch find_pak_code(byte *exe, size_t size, PakCode &code) {
         return not_found("Unmount's delete call isn't as expected");
     }
 
-    const byte *count_up = find_function("FPakPlatformFile_CreatePakFileHandle count", "f0ff86????0000",
-                                         code.create_pak_file_handle, 0x400);
+    const byte *count_up = find_function(
+        "FPakPlatformFile_CreatePakFileHandle count",
+        "f0ff86????0000",
+        code.create_pak_file_handle,
+        0x400
+    );
     if (count_up && changed_by_other_mods("CreatePakFileHandle's handle count", count_up + 3, 4)) {
         return PakCodeSearch::changed_by_other_mods;
     }
     const bool destructor_matches = find_function(
         "FPakFile scalar deleting destructor",
-        "48895c2408"        // mov    [rsp+8],rbx
-        "4889742410"        // mov    [rsp+10h],rsi
-        "57"                // push   rdi
-        "4883ec20"          // sub    rsp,20h
-        "488bd9"            // mov    rbx,rcx
-        "8bf2",             // mov    esi,edx                        (the delete flag)
+        "48895c2408"  // mov    [rsp+8],rbx
+        "4889742410"  // mov    [rsp+10h],rsi
+        "57"          // push   rdi
+        "4883ec20"    // sub    rsp,20h
+        "488bd9"      // mov    rbx,rcx
+        "8bf2",       // mov    esi,edx                        (the delete flag)
         code.delete_pak_file,
-        20);
+        20
+    );
     if (!count_up || read_u32(count_up + 3) != code.sync_handles_offset || !destructor_matches) {
-        return not_found(destructor_matches ? "CreatePakFileHandle's handle count isn't as expected"
-                                            : "FPakFile's destructor isn't as expected");
+        return not_found(
+            destructor_matches ? "CreatePakFileHandle's handle count isn't as expected"
+                               : "FPakFile's destructor isn't as expected"
+        );
     }
     return PakCodeSearch::found;
 }
@@ -236,7 +252,7 @@ constexpr uint64_t kNotReading = 0;
 // The epoch a thread reports while in a handle destructor: older than every unmount, so it holds back every pak
 constexpr uint64_t kAnyPakEpoch = 1;
 
-OwnLine<uint64_t> g_current_epoch{2};
+OwnLine<uint64_t> g_current_epoch{ 2 };
 
 struct Tracked {
     void **slot;
@@ -247,15 +263,15 @@ struct Tracked {
 constexpr int kMaxTracked = 64;
 
 struct alignas(64) ReaderSlot {
-    std::atomic<uint64_t> epoch{kNotReading};
-    std::atomic<bool> owned{true};
+    std::atomic<uint64_t> epoch{ kNotReading };
+    std::atomic<bool> owned{ true };
     ReaderSlot *next = nullptr;
-    std::atomic<const Tracked *> tracked{nullptr};
-    std::atomic<const std::atomic<int> *> tracked_count{nullptr};
+    std::atomic<const Tracked *> tracked{ nullptr };
+    std::atomic<const std::atomic<int> *> tracked_count{ nullptr };
 };
 
 // Every thread's reader slot, newest first. Slots are reused, never freed
-std::atomic<ReaderSlot *> g_reader_slots{nullptr};
+std::atomic<ReaderSlot *> g_reader_slots{ nullptr };
 
 struct ThreadSlot {
     ReaderSlot *slot = nullptr;
@@ -283,11 +299,8 @@ ReaderSlot *claim_slot() {
 
     auto *slot = new ReaderSlot;
     slot->next = g_reader_slots.load(std::memory_order_relaxed);
-    while (!g_reader_slots.compare_exchange_weak(
-        slot->next,
-        slot,
-        std::memory_order_release,
-        std::memory_order_relaxed)) {
+    while (!g_reader_slots.compare_exchange_weak(slot->next, slot, std::memory_order_release, std::memory_order_relaxed)
+    ) {
     }
     return slot;
 }
@@ -304,7 +317,7 @@ uint64_t oldest_reader_epoch() {
 }
 
 thread_local Tracked g_tracked[kMaxTracked];
-thread_local std::atomic<int> g_tracked_count{0};
+thread_local std::atomic<int> g_tracked_count{ 0 };
 thread_local int g_destructors_running = 0;
 
 uint64_t thread_epoch() {
@@ -317,16 +330,16 @@ uint64_t thread_epoch() {
 void *(*FPakFile_Delete)(void *pak_file, uint32_t flags);
 
 // Whether readers are tracked, so Unmount's deletes can be deferred
-std::atomic<bool> g_tracking{true};
+std::atomic<bool> g_tracking{ true };
 
 // Set when the game's crash reporting starts
-std::atomic<bool> g_returns_restored{false};
+std::atomic<bool> g_returns_restored{ false };
 
 byte *g_exe = nullptr;
 PakCode g_code;
 
 // The engine's PakListCritical, learned at the first Mount
-std::atomic<CRITICAL_SECTION *> g_pak_list_lock{nullptr};
+std::atomic<CRITICAL_SECTION *> g_pak_list_lock{ nullptr };
 
 struct UnmountedPak {
     void *pak_file;
@@ -337,20 +350,20 @@ struct UnmountedPak {
 std::mutex g_unmounted_lock;
 std::vector<UnmountedPak> g_unmounted;
 
-OwnLine<size_t> g_unmounted_count{0};
+OwnLine<size_t> g_unmounted_count{ 0 };
 
 // The epoch of the most recent unmount: a reader started after it can't have a waiting pak in its copy
-OwnLine<uint64_t> g_newest_unmounted_epoch{0};
+OwnLine<uint64_t> g_newest_unmounted_epoch{ 0 };
 
 // The thread-pool work that deletes released paks
 PTP_WORK g_release_work;
-OwnLine<bool> g_release_queued{false};
+OwnLine<bool> g_release_queued{ false };
 
 // The thread-pool timer that checks the waiting paks every 250 ms
 PTP_TIMER g_release_timer;
 
 // Set once the game exits or reports a crash
-std::atomic<bool> g_exiting{false};
+std::atomic<bool> g_exiting{ false };
 
 // Whether this thread is deleting released paks
 thread_local bool g_releasing = false;
@@ -386,7 +399,7 @@ int32_t open_handles(void *pak_file, uint32_t offset) {
 
 bool has_open_handles(const UnmountedPak &pak) {
     return open_handles(pak.pak_file, g_code.sync_handles_offset) != 0 ||
-        open_handles(pak.pak_file, g_code.async_handles_offset) != 0;
+           open_handles(pak.pak_file, g_code.async_handles_offset) != 0;
 }
 
 // Needs g_unmounted_lock held. The counts are read before and after the readers: either order alone misses a
@@ -444,7 +457,7 @@ void delete_when_released(void *pak_file, uint32_t flags) {
     {
         std::lock_guard guard(g_unmounted_lock);
         const uint64_t epoch = g_current_epoch.value.fetch_add(1);
-        g_unmounted.push_back({pak_file, flags, epoch});
+        g_unmounted.push_back({ pak_file, flags, epoch });
         g_newest_unmounted_epoch.value.store(epoch);
         g_unmounted_count.value.fetch_add(1);
     }
@@ -509,7 +522,7 @@ Import find_import(byte *module, const char *function) {
     Import found;
     for_each_import(module, [&](const char *dll, const char *name, void **slot) {
         if (strcmp(name, function) == 0) {
-            found = {dll, slot};
+            found = { dll, slot };
         }
     });
     return found;
@@ -551,7 +564,7 @@ void *handle_destructor_hook(void *handle, uint32_t flags) {
 
 template <size_t... Classes>
 constexpr std::array<HandleDestructor, kHandleClasses> handle_destructor_hooks(std::index_sequence<Classes...>) {
-    return {&handle_destructor_hook<Classes>...};
+    return { &handle_destructor_hook<Classes>... };
 }
 
 constexpr std::array<HandleDestructor, kHandleClasses> kHandleDestructorHooks =
@@ -578,8 +591,10 @@ void hook_handle_destructor(void **vtable) {
         return;
     }
     guard.unlock();
-    DEBUG_LOG("Handle destructor " + describe_address(reinterpret_cast<const void *>(g_handle_destructors[index])) +
-              " hooked through its vtable " + describe_address(vtable));
+    DEBUG_LOG(
+        "Handle destructor " + describe_address(reinterpret_cast<const void *>(g_handle_destructors[index])) +
+        " hooked through its vtable " + describe_address(vtable)
+    );
 }
 
 void *CreatePakFileHandle_Hook(void *pak_platform_file, const wchar_t *filename, void *pak_file, const void *entry) {
@@ -617,7 +632,7 @@ GrowFunctionTable g_grow_function_table;
 std::shared_mutex g_stubs_lock;
 std::unordered_map<const byte *, byte *> g_stubs;
 StubRegion *g_regions[kMaxRegions];
-std::atomic<size_t> g_region_count{0};
+std::atomic<size_t> g_region_count{ 0 };
 
 bool is_stub(const void *address) {
     const size_t count = g_region_count.load(std::memory_order_acquire);
@@ -638,8 +653,8 @@ StubRegion *current_stub_region() {
     if (count == kMaxRegions) {
         return nullptr;
     }
-    auto *memory = static_cast<byte *>(VirtualAlloc(nullptr, kRegionSize, MEM_COMMIT | MEM_RESERVE,
-                                                    PAGE_EXECUTE_READWRITE));
+    auto *memory =
+        static_cast<byte *>(VirtualAlloc(nullptr, kRegionSize, MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE));
     if (!memory) {
         return nullptr;
     }
@@ -654,8 +669,14 @@ DWORD region_offset(const StubRegion &region, const byte *at) {
     return static_cast<DWORD>(at - region.memory);
 }
 
-bool copy_unwind_info(DWORD64 module, const RUNTIME_FUNCTION *function, const StubRegion &region, byte *to,
-                      const byte *end, const RUNTIME_FUNCTION &stub) {
+bool copy_unwind_info(
+    DWORD64 module,
+    const RUNTIME_FUNCTION *function,
+    const StubRegion &region,
+    byte *to,
+    const byte *end,
+    const RUNTIME_FUNCTION &stub
+) {
     for (int depth = 0; depth < 8; depth++) {
         const byte *from = unwind_info(module, function);
         const size_t codes = unwind_codes_size(from);
@@ -712,9 +733,9 @@ byte *return_stub_for(const byte *return_to) {
     }
     const void *thunk = reinterpret_cast<const void *>(&pak_return_thunk);
     const byte instructions[] = {
-        0xFF, 0x15, 0x0A, 0x00, 0x00, 0x00, // call [rip+0Ah]          (pak_return_thunk, at +10h)
-        0x90,                               // nop                     (so the jump isn't read as an epilogue)
-        0xFF, 0x25, 0x0B, 0x00, 0x00, 0x00, // jmp  [rip+0Bh]          (the return address, at +18h)
+        0xFF, 0x15, 0x0A, 0x00, 0x00, 0x00,  // call [rip+0Ah]          (pak_return_thunk, at +10h)
+        0x90,                                // nop                     (so the jump isn't read as an epilogue)
+        0xFF, 0x25, 0x0B, 0x00, 0x00, 0x00,  // jmp  [rip+0Bh]          (the return address, at +18h)
     };
     memset(entry, 0xCC, kStubCodeOffset + kStubThunk);
     memcpy(code, instructions, sizeof(instructions));
@@ -770,8 +791,10 @@ void log_lock_call_once([[maybe_unused]] const byte *lock_call) {
             return;
         }
     }
-    DEBUG_LOG("Reader found, taking the pak lock at " + describe_address(lock_call) + " (in the function at " +
-              describe_address(function_start(lock_call)) + ")");
+    DEBUG_LOG(
+        "Reader found, taking the pak lock at " + describe_address(lock_call) + " (in the function at " +
+        describe_address(function_start(lock_call)) + ")"
+    );
 #endif
 }
 
@@ -784,8 +807,16 @@ bool unwind_frame(CONTEXT &context) {
     } else {
         void *handler_data;
         DWORD64 establisher;
-        RtlVirtualUnwind(UNW_FLAG_NHANDLER, module, context.Rip, function, &context, &handler_data, &establisher,
-                         nullptr);
+        RtlVirtualUnwind(
+            UNW_FLAG_NHANDLER,
+            module,
+            context.Rip,
+            function,
+            &context,
+            &handler_data,
+            &establisher,
+            nullptr
+        );
     }
     return context.Rip != 0;
 }
@@ -890,7 +921,7 @@ __declspec(noinline) void track_reader(void **lock_call_return) {
     byte *stub = count < kMaxTracked ? return_stub_for(static_cast<const byte *>(*slot)) : nullptr;
     if (stub) {
         log_lock_call_once(lock_call);
-        g_tracked[count] = {slot, stub, g_current_epoch.value.load(std::memory_order_relaxed)};
+        g_tracked[count] = { slot, stub, g_current_epoch.value.load(std::memory_order_relaxed) };
         g_tracked_count.store(count + 1, std::memory_order_relaxed);
         void *return_to = *slot;
         *slot = stub;
@@ -921,15 +952,21 @@ CRITICAL_SECTION *learn_pak_list_lock(CRITICAL_SECTION *section) {
     return section;
 }
 
-using MountFunction = bool (*)(void *pak_platform_file, const wchar_t *filename, uint32_t order, const wchar_t *path,
-                               bool load_index);
+using MountFunction =
+    bool (*)(void *pak_platform_file, const wchar_t *filename, uint32_t order, const wchar_t *path, bool load_index);
 MountFunction Mount;
 
-bool Mount_Hook(void *pak_platform_file, const wchar_t *filename, uint32_t order, const wchar_t *path,
-                bool load_index) {
+bool Mount_Hook(
+    void *pak_platform_file,
+    const wchar_t *filename,
+    uint32_t order,
+    const wchar_t *path,
+    bool load_index
+) {
     if (!g_pak_list_lock.load(std::memory_order_relaxed)) {
-        learn_pak_list_lock(reinterpret_cast<CRITICAL_SECTION *>(static_cast<byte *>(pak_platform_file) +
-                                                                 g_code.pak_list_critical_offset));
+        learn_pak_list_lock(reinterpret_cast<CRITICAL_SECTION *>(
+            static_cast<byte *>(pak_platform_file) + g_code.pak_list_critical_offset
+        ));
     }
     return Mount(pak_platform_file, filename, order, path, load_index);
 }
@@ -978,17 +1015,30 @@ void restore_all_return_addresses() {
 decltype(&MiniDumpWriteDump) g_minidump_write_dump;
 decltype(&StackWalk64) g_stack_walk64;
 
-BOOL WINAPI minidump_write_dump_hook(HANDLE process, DWORD process_id, HANDLE file, MINIDUMP_TYPE type,
-                                     PMINIDUMP_EXCEPTION_INFORMATION exception,
-                                     PMINIDUMP_USER_STREAM_INFORMATION user_streams,
-                                     PMINIDUMP_CALLBACK_INFORMATION callback) {
+BOOL WINAPI minidump_write_dump_hook(
+    HANDLE process,
+    DWORD process_id,
+    HANDLE file,
+    MINIDUMP_TYPE type,
+    PMINIDUMP_EXCEPTION_INFORMATION exception,
+    PMINIDUMP_USER_STREAM_INFORMATION user_streams,
+    PMINIDUMP_CALLBACK_INFORMATION callback
+) {
     restore_all_return_addresses();
     return g_minidump_write_dump(process, process_id, file, type, exception, user_streams, callback);
 }
 
-BOOL WINAPI stack_walk64_hook(DWORD machine, HANDLE process, HANDLE thread, LPSTACKFRAME64 frame, PVOID context,
-                              PREAD_PROCESS_MEMORY_ROUTINE64 read, PFUNCTION_TABLE_ACCESS_ROUTINE64 function_table,
-                              PGET_MODULE_BASE_ROUTINE64 module_base, PTRANSLATE_ADDRESS_ROUTINE64 translate) {
+BOOL WINAPI stack_walk64_hook(
+    DWORD machine,
+    HANDLE process,
+    HANDLE thread,
+    LPSTACKFRAME64 frame,
+    PVOID context,
+    PREAD_PROCESS_MEMORY_ROUTINE64 read,
+    PFUNCTION_TABLE_ACCESS_ROUTINE64 function_table,
+    PGET_MODULE_BASE_ROUTINE64 module_base,
+    PTRANSLATE_ADDRESS_ROUTINE64 translate
+) {
     restore_all_return_addresses();
     return g_stack_walk64(machine, process, thread, frame, context, read, function_table, module_base, translate);
 }
@@ -1017,7 +1067,7 @@ void hook_crash_reports(byte *module) {
 bool shadow_stacks_enforced() {
     PROCESS_MITIGATION_USER_SHADOW_STACK_POLICY policy = {};
     return GetProcessMitigationPolicy(GetCurrentProcess(), ProcessUserShadowStackPolicy, &policy, sizeof(policy)) &&
-        policy.EnableUserShadowStack;
+           policy.EnableUserShadowStack;
 }
 
 template <typename Function>
@@ -1036,10 +1086,13 @@ int apply_fix() {
     const Import enter_import = find_import(g_exe, "EnterCriticalSection");
     if (!g_add_function_table || !g_grow_function_table ||
         reinterpret_cast<const byte *>(enter_import.slot) != g_code.wrapper_lock_slot) {
-        log_error(std::string(g_add_function_table && g_grow_function_table
-                                  ? "The pak lock isn't taken through the exe's import"
-                                  : "No growable function tables") +
-                  " - pak unmount fix not applied");
+        log_error(
+            std::string(
+                g_add_function_table && g_grow_function_table ? "The pak lock isn't taken through the exe's import"
+                                                              : "No growable function tables"
+            ) +
+            " - pak unmount fix not applied"
+        );
         return FNL_FAILED;
     }
 
@@ -1062,26 +1115,32 @@ int apply_fix() {
         log_error("Hooks not installed - pak unmount fix not applied");
         return FNL_FAILED;
     }
-    if (!redirect_import(enter_import.dll, "EnterCriticalSection", &enter_critical_section_hook,
-                         &g_enter_critical_section)) {
+    if (!redirect_import(
+            enter_import.dll,
+            "EnterCriticalSection",
+            &enter_critical_section_hook,
+            &g_enter_critical_section
+        )) {
         g_tracking.store(false);
         log_error("The pak lock's import couldn't be redirected - pak unmount fix not applied");
         return FNL_FAILED;
     }
     hook_crash_reports(g_exe);
     if (const std::string not_redirected = redirect_crt_exits(); !not_redirected.empty()) {
-        log_warning("Unable to redirect CRT functions [" + not_redirected +
-                    "]. A pak unmount could cause a crash when the game exits. Continuing.");
+        log_warning(
+            "Unable to redirect CRT functions [" + not_redirected +
+            "]. A pak unmount could cause a crash when the game exits. Continuing."
+        );
     }
 
     const int64_t first = -250LL * 10000;
-    FILETIME due{static_cast<DWORD>(first), static_cast<DWORD>(static_cast<uint64_t>(first) >> 32)};
+    FILETIME due{ static_cast<DWORD>(first), static_cast<DWORD>(static_cast<uint64_t>(first) >> 32) };
     SetThreadpoolTimer(g_release_timer, &due, 250, 50);
     DEBUG_LOG("Applied");
     return FNL_OK;
 }
 
-} // namespace
+}  // namespace
 
 extern "C" void pak_return_exit(void **stack) {
     const uint64_t before = thread_epoch();
@@ -1092,14 +1151,14 @@ extern "C" void pak_return_exit(void **stack) {
 int ApplyPakUnmountFix() {
     g_exe = g_loader->game->base;
     switch (find_pak_code(g_exe, g_loader->game->image_size, g_code)) {
-    case PakCodeSearch::missing:
-        log_warning(g_not_found + " - pak unmount fix not applied");
-        return FNL_UNSUPPORTED;
-    case PakCodeSearch::changed_by_other_mods:
-        log_error(g_not_found + " - pak unmount fix not applied");
-        return FNL_FAILED;
-    case PakCodeSearch::found:
-        break;
+        case PakCodeSearch::missing:
+            log_warning(g_not_found + " - pak unmount fix not applied");
+            return FNL_UNSUPPORTED;
+        case PakCodeSearch::changed_by_other_mods:
+            log_error(g_not_found + " - pak unmount fix not applied");
+            return FNL_FAILED;
+        case PakCodeSearch::found:
+            break;
     }
     return apply_fix();
 }

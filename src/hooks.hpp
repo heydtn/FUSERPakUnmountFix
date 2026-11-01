@@ -13,7 +13,7 @@ std::string other_owners(const void *at, size_t size);
 template <typename Function>
 FnlHook hook_request(const char *name, Function &target, Function hook) {
     static_assert(std::is_pointer_v<Function> && std::is_function_v<std::remove_pointer_t<Function>>);
-    return {name, reinterpret_cast<void **>(&target), reinterpret_cast<void *>(hook)};
+    return { name, reinterpret_cast<void **>(&target), reinterpret_cast<void *>(hook) };
 }
 
 bool setup_hooks(const FnlHook *hooks, size_t count);

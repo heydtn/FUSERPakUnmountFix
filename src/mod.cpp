@@ -16,9 +16,11 @@ extern "C" FNL_MOD_EXPORT int fnl_mod_init(const FnlApi *api, FnlMod *self) {
     g_loader = api;
     g_this_mod = self;
     if (!FNL_API_HAS(api, changed)) {
-        log_warning("Detected an older FUSERNativeLoader. The fix may still work, but it can't check whether other "
-                    "mods have changed the pak code it reads, so upgrading to a FUSERNativeLoader newer than 0.16.0 "
-                    "is recommended.");
+        log_warning(
+            "Detected an older FUSERNativeLoader. The fix may still work, but it can't check whether other "
+            "mods have changed the pak code it reads, so upgrading to a FUSERNativeLoader newer than 0.16.0 "
+            "is recommended."
+        );
     }
     return ApplyPakUnmountFix();
 }
