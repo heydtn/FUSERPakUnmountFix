@@ -1045,9 +1045,6 @@ BOOL WINAPI stack_walk64_hook(
 
 template <typename Function>
 void redirect_dbghelp(byte *module, const char *function, Function hook, Function *original) {
-    if (redirect_import(nullptr, function, hook, original)) {
-        return;
-    }
     void **delay_slot = nullptr;
     for_each_delay_import(module, [&](const char *, const char *name, void **slot) {
         if (strcmp(name, function) == 0) {
@@ -1056,6 +1053,8 @@ void redirect_dbghelp(byte *module, const char *function, Function hook, Functio
     });
     if (delay_slot) {
         redirect_slot(delay_slot, hook, original);
+    } else {
+        redirect_import(nullptr, function, hook, original);
     }
 }
 
