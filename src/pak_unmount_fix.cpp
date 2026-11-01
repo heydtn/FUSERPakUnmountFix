@@ -621,8 +621,8 @@ void *CreatePakFileHandle_Hook(void *pak_platform_file, const wchar_t *filename,
 }
 
 // A stub ends its reader, then jumps to the real return. Its unwind data is that function's, minus the prologue and
-// exception handlers; its code starts a little after its entry, since walkers look a return address up a byte early
-constexpr size_t kStubCodeOffset = 0x10;
+// exception handlers; its code starts past every unwind code's offset, so Windows applies all of them
+constexpr size_t kStubCodeOffset = 0x100;
 constexpr size_t kStubCodeEnd = 0x0D;
 constexpr size_t kStubThunk = 0x10;
 constexpr size_t kStubReturnTo = 0x18;
