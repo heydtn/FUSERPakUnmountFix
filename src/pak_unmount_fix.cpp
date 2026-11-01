@@ -332,7 +332,7 @@ void *(*FPakFile_Delete)(void *pak_file, uint32_t flags);
 // Whether readers are tracked, so Unmount's deletes can be deferred
 std::atomic<bool> g_tracking{ true };
 
-// Set when the game's crash reporting starts
+// Set when the game crashes
 std::atomic<bool> g_returns_restored{ false };
 
 byte *g_exe = nullptr;
@@ -364,6 +364,12 @@ PTP_TIMER g_release_timer;
 
 // Set once the game exits or reports a crash
 std::atomic<bool> g_exiting{ false };
+
+// Set when an unhandled exception reaches the top-level filter, for the release timer to log the crash
+std::atomic<bool> g_crash_pending{ false };
+
+// Set once the crash has been logged
+std::atomic<bool> g_crash_logged{ false };
 
 // Whether this thread is deleting released paks
 thread_local bool g_releasing = false;
@@ -447,7 +453,16 @@ void CALLBACK release_paks(PTP_CALLBACK_INSTANCE, void *, PTP_WORK) {
     g_releasing = false;
 }
 
+void log_crash_once() {
+    if (!g_crash_logged.exchange(true)) {
+        log_warning("Crash detected, rewinding pak reader return addresses");
+    }
+}
+
 void CALLBACK release_tick(PTP_CALLBACK_INSTANCE, void *, PTP_TIMER) {
+    if (g_crash_pending.load()) {
+        log_crash_once();
+    }
     if (g_unmounted_count.value.load() != 0 && !g_exiting.load()) {
         request_release();
     }
@@ -634,15 +649,33 @@ std::unordered_map<const byte *, byte *> g_stubs;
 StubRegion *g_regions[kMaxRegions];
 std::atomic<size_t> g_region_count{ 0 };
 
-bool is_stub(const void *address) {
+const byte *stub_region_containing(const void *address) {
     const size_t count = g_region_count.load(std::memory_order_acquire);
     for (size_t i = 0; i < count; i++) {
         const byte *memory = g_regions[i]->memory;
         if (address >= memory && address < memory + kRegionSize) {
-            return true;
+            return memory;
         }
     }
-    return false;
+    return nullptr;
+}
+
+bool is_stub(const void *address) {
+    return stub_region_containing(address) != nullptr;
+}
+
+void *stub_real_return(const byte *stub) {
+    return *reinterpret_cast<void *const *>(stub + kStubReturnTo);
+}
+
+const byte *stub_return_to(DWORD64 address) {
+    const auto *at = reinterpret_cast<const byte *>(address);
+    const byte *memory = stub_region_containing(at);
+    if (!memory) {
+        return nullptr;
+    }
+    const byte *stub = memory + (at - memory) / kReturnStubSize * kReturnStubSize + kStubCodeOffset;
+    return static_cast<const byte *>(stub_real_return(stub));
 }
 
 StubRegion *current_stub_region() {
@@ -821,6 +854,14 @@ bool unwind_frame(CONTEXT &context) {
     return context.Rip != 0;
 }
 
+bool unwind_frame_safely(CONTEXT &context) {
+    __try {
+        return unwind_frame(context);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+}
+
 void drop_dead_readers(void **floor) {
     int kept = 0;
     const int count = g_tracked_count.load(std::memory_order_relaxed);
@@ -982,8 +1023,8 @@ void WINAPI enter_critical_section_hook(LPCRITICAL_SECTION section) {
     g_enter_critical_section(section);
 }
 
-// DbgHelp's StackWalk64 and debuggers reading a minidump don't see the stubs' unwind data, so before the game's crash
-// reporting walks or dumps a stack, every reader's real return address is put back; nothing is tracked or freed after
+// Debuggers reading a minidump don't see the stubs' unwind data, so when the game crashes, every reader's real return
+// address is put back; nothing is tracked or freed after
 void restore_return_addresses(const ReaderSlot *reader) {
     __try {
         const Tracked *tracked = reader->tracked.load();
@@ -993,7 +1034,7 @@ void restore_return_addresses(const ReaderSlot *reader) {
             void **slot = tracked[i].slot;
             byte *stub = tracked[i].stub;
             if (*slot == stub) {
-                *slot = *reinterpret_cast<void **>(stub + kStubReturnTo);
+                *slot = stub_real_return(stub);
             }
         }
     } __except (EXCEPTION_EXECUTE_HANDLER) {
@@ -1009,11 +1050,29 @@ void restore_all_return_addresses() {
     for (const ReaderSlot *reader = g_reader_slots.load(); reader; reader = reader->next) {
         restore_return_addresses(reader);
     }
-    log_warning("Crash detected, rewinding pak reader return addresses");
+}
+
+decltype(&SetUnhandledExceptionFilter) g_set_unhandled_exception_filter;
+
+// The unhandled-exception filter the game set, called after this mod's
+std::atomic<LPTOP_LEVEL_EXCEPTION_FILTER> g_game_unhandled_exception_filter{ nullptr };
+
+LONG WINAPI unhandled_exception_hook(EXCEPTION_POINTERS *exception) {
+    restore_all_return_addresses();
+    g_crash_pending.store(true);
+    const LPTOP_LEVEL_EXCEPTION_FILTER game_filter = g_game_unhandled_exception_filter.load();
+    return game_filter ? game_filter(exception) : EXCEPTION_CONTINUE_SEARCH;
+}
+
+LPTOP_LEVEL_EXCEPTION_FILTER WINAPI set_unhandled_exception_filter_hook(LPTOP_LEVEL_EXCEPTION_FILTER filter) {
+    return g_game_unhandled_exception_filter.exchange(filter);
 }
 
 decltype(&MiniDumpWriteDump) g_minidump_write_dump;
 decltype(&StackWalk64) g_stack_walk64;
+
+// The DLL the exe delay-loads StackWalk64 from, or null when it doesn't delay-load it
+const char *g_stack_walk64_dll = nullptr;
 
 BOOL WINAPI minidump_write_dump_hook(
     HANDLE process,
@@ -1025,7 +1084,33 @@ BOOL WINAPI minidump_write_dump_hook(
     PMINIDUMP_CALLBACK_INFORMATION callback
 ) {
     restore_all_return_addresses();
+    log_crash_once();
     return g_minidump_write_dump(process, process_id, file, type, exception, user_streams, callback);
+}
+
+bool in_exe(const void *address) {
+    const auto *at = static_cast<const byte *>(address);
+    return at >= g_exe && at < g_exe + g_loader->game->image_size;
+}
+
+decltype(&StackWalk64) callable_stack_walk64() {
+    decltype(&StackWalk64) original = g_stack_walk64;
+    if (!g_stack_walk64_dll || !in_exe(reinterpret_cast<const void *>(original))) {
+        return original;
+    }
+    HMODULE dbghelp = LoadLibraryExA(g_stack_walk64_dll, nullptr, 0);
+    const auto resolved =
+        dbghelp ? reinterpret_cast<decltype(&StackWalk64)>(GetProcAddress(dbghelp, "StackWalk64")) : nullptr;
+    if (!resolved) {
+        return original;
+    }
+    g_stack_walk64 = resolved;
+    return resolved;
+}
+
+DWORD64 real_return_address(DWORD64 address) {
+    const byte *real_return = stub_return_to(address);
+    return real_return ? reinterpret_cast<DWORD64>(real_return) : address;
 }
 
 BOOL WINAPI stack_walk64_hook(
@@ -1039,28 +1124,45 @@ BOOL WINAPI stack_walk64_hook(
     PGET_MODULE_BASE_ROUTINE64 module_base,
     PTRANSLATE_ADDRESS_ROUTINE64 translate
 ) {
-    restore_all_return_addresses();
-    return g_stack_walk64(machine, process, thread, frame, context, read, function_table, module_base, translate);
+    const BOOL walked =
+        callable_stack_walk64()(machine, process, thread, frame, context, read, function_table, module_base, translate);
+    const bool this_process = process == GetCurrentProcess() || GetProcessId(process) == GetCurrentProcessId();
+    if (!walked || !frame || !this_process) {
+        return walked;
+    }
+    const DWORD64 real_pc = real_return_address(frame->AddrPC.Offset);
+    if (real_pc != frame->AddrPC.Offset && context && machine == IMAGE_FILE_MACHINE_AMD64) {
+        frame->AddrPC.Offset = real_pc;
+        auto *walked_context = static_cast<CONTEXT *>(context);
+        walked_context->Rip = real_pc;
+        CONTEXT caller = *walked_context;
+        frame->AddrReturn.Offset = unwind_frame_safely(caller) ? real_return_address(caller.Rip) : 0;
+    } else {
+        frame->AddrReturn.Offset = real_return_address(frame->AddrReturn.Offset);
+    }
+    return walked;
 }
 
 template <typename Function>
-void redirect_dbghelp(byte *module, const char *function, Function hook, Function *original) {
+const char *redirect_dbghelp(byte *module, const char *function, Function hook, Function *original) {
     void **delay_slot = nullptr;
-    for_each_delay_import(module, [&](const char *, const char *name, void **slot) {
+    const char *delay_dll = nullptr;
+    for_each_delay_import(module, [&](const char *dll, const char *name, void **slot) {
         if (strcmp(name, function) == 0) {
             delay_slot = slot;
+            delay_dll = dll;
         }
     });
-    if (delay_slot) {
-        redirect_slot(delay_slot, hook, original);
-    } else {
-        redirect_import(nullptr, function, hook, original);
+    if (delay_slot && redirect_slot(delay_slot, hook, original)) {
+        return delay_dll;
     }
+    redirect_import(nullptr, function, hook, original);
+    return nullptr;
 }
 
 void hook_crash_reports(byte *module) {
     redirect_dbghelp(module, "MiniDumpWriteDump", &minidump_write_dump_hook, &g_minidump_write_dump);
-    redirect_dbghelp(module, "StackWalk64", &stack_walk64_hook, &g_stack_walk64);
+    g_stack_walk64_dll = redirect_dbghelp(module, "StackWalk64", &stack_walk64_hook, &g_stack_walk64);
 }
 
 bool shadow_stacks_enforced() {
@@ -1125,6 +1227,18 @@ int apply_fix() {
         return FNL_FAILED;
     }
     hook_crash_reports(g_exe);
+    g_game_unhandled_exception_filter.store(SetUnhandledExceptionFilter(&unhandled_exception_hook));
+    if (!redirect_import(
+            nullptr,
+            "SetUnhandledExceptionFilter",
+            &set_unhandled_exception_filter_hook,
+            &g_set_unhandled_exception_filter
+        )) {
+        log_warning(
+            "Unable to redirect SetUnhandledExceptionFilter. A crash outside the game's crash handler could leave pak "
+            "readers' return addresses redirected. Continuing."
+        );
+    }
     if (const std::string not_redirected = redirect_crt_exits(); !not_redirected.empty()) {
         log_warning(
             "Unable to redirect CRT functions [" + not_redirected +
